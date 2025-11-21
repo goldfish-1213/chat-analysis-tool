@@ -1,5 +1,7 @@
 import streamlit as st
-import json
+# 确保这些 import 都在最上面
+import ijson
+import pandas as pd  # 这里就是报错找不到的 pd，一定要有！
 import jieba
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
@@ -15,11 +17,10 @@ import gc
 # ==========================================
 # 0. 基础配置
 # ==========================================
-st.set_page_config(page_title="ChatGPT 深度分析 29.0", layout="wide", page_icon="📊")
+st.set_page_config(page_title="ChatGPT 深度分析 31.0", layout="wide", page_icon="📊")
 
 st.markdown("""
 <style>
-/* 保持左对齐的清爽布局 */
 div[data-testid="stColorPicker"] {
     display: flex;
     justify-content: center;
@@ -63,90 +64,86 @@ DEFAULT_STOPWORDS = {
 }
 
 # ==========================================
-# 3. 核心解析函数 (流式计算，内存占用极低)
+# 3. 核心解析函数 (流式读取修复版)
 # ==========================================
 @st.cache_data
 def parse_and_count_stream(file, stop_words):
     try:
-        data = json.load(file)
-    except:
-        st.error("文件格式不对，请确保上传的是 JSON 文件")
-        return None
-
-    # 总计数器
-    user_counter = Counter()
-    ai_counter = Counter()
-    
-    # 时光机计数器：Key是月份(str), Value是该月的Counter
-    # 结构: { '2023-10': Counter({'单词': 10, ...}), ... }
-    timeline_counters = defaultdict(Counter)
-    timeline_counts = defaultdict(int) # 记录每个月对话条数
-
-    u_count = 0
-    u_total_len = 0
-    
-    a_count = 0
-    a_total_len = 0
-
-    for conversation in data:
-        mapping = conversation.get('mapping', {})
-        create_time = conversation.get('create_time')
-        base_dt = datetime.fromtimestamp(create_time) if create_time else None
+        # 【新增】重要：将文件指针重置到开头，防止多次读取时出错
+        file.seek(0) 
         
-        for node_id, node_data in mapping.items():
-            message = node_data.get('message')
-            if message and message.get('content') and message.get('author'):
-                role = message['author']['role']
-                content_parts = message['content'].get('parts', [])
-                text_content = "".join([part for part in content_parts if isinstance(part, str)])
-                
-                if text_content:
-                    # 1. 基础统计
-                    text_len = len(text_content)
+        # ijson 流式读取
+        # 'item' 表示根列表下的每一项
+        conversations = ijson.items(file, 'item')
+        
+        user_counter = Counter()
+        ai_counter = Counter()
+        timeline_counters = defaultdict(Counter)
+        timeline_counts = defaultdict(int)
+
+        u_count = 0
+        u_total_len = 0
+        a_count = 0
+        a_total_len = 0
+
+        for conversation in conversations:
+            mapping = conversation.get('mapping', {})
+            create_time = conversation.get('create_time')
+            base_dt = datetime.fromtimestamp(create_time) if create_time else None
+            
+            for node_id, node_data in mapping.items():
+                message = node_data.get('message')
+                # 防御性检查
+                if message is None: continue
                     
-                    # 2. 获取月份 (用于时光机)
-                    msg_time = message.get('create_time')
-                    dt = datetime.fromtimestamp(msg_time) if msg_time else base_dt
-                    month_key = dt.strftime('%Y-%m') if dt else "Unknown"
+                if message and message.get('content') and message.get('author'):
+                    role = message['author']['role']
+                    content_parts = message['content'].get('parts', [])
+                    text_content = "".join([part for part in content_parts if isinstance(part, str)])
+                    
+                    if text_content:
+                        text_len = len(text_content)
+                        msg_time = message.get('create_time')
+                        dt = datetime.fromtimestamp(msg_time) if msg_time else base_dt
+                        month_key = dt.strftime('%Y-%m') if dt else "Unknown"
 
-                    if role == 'user':
-                        u_count += 1
-                        u_total_len += text_len
-                        
-                        # 流式分词 + 过滤
-                        words = jieba.cut(text_content)
-                        filtered = [w for w in words if len(w.strip()) > 1 and w.strip().lower() not in stop_words]
-                        
-                        # 更新总表
-                        user_counter.update(filtered)
-                        # 更新月度表 (时光机)
-                        if month_key != "Unknown":
-                            timeline_counters[month_key].update(filtered)
-                            timeline_counts[month_key] += 1
+                        if role == 'user':
+                            u_count += 1
+                            u_total_len += text_len
+                            words = jieba.cut(text_content)
+                            filtered = [w for w in words if len(w.strip()) > 1 and w.strip().lower() not in stop_words]
+                            user_counter.update(filtered)
+                            if month_key != "Unknown":
+                                timeline_counters[month_key].update(filtered)
+                                timeline_counts[month_key] += 1
 
-                    elif role == 'assistant':
-                        a_count += 1
-                        a_total_len += text_len
-                        
-                        words = jieba.cut(text_content)
-                        filtered = [w for w in words if len(w.strip()) > 1 and w.strip().lower() not in stop_words]
-                        ai_counter.update(filtered)
+                        elif role == 'assistant':
+                            a_count += 1
+                            a_total_len += text_len
+                            words = jieba.cut(text_content)
+                            filtered = [w for w in words if len(w.strip()) > 1 and w.strip().lower() not in stop_words]
+                            ai_counter.update(filtered)
+        
+        # 计算平均值
+        u_avg = int(u_total_len / u_count) if u_count > 0 else 0
+        a_avg = int(a_total_len / a_count) if a_count > 0 else 0
+        
+        # 显式垃圾回收
+        del conversations
+        gc.collect()
 
-    # 显式释放内存
-    del data
-    gc.collect()
-    
-    u_avg = int(u_total_len / u_count) if u_count > 0 else 0
-    a_avg = int(a_total_len / a_count) if a_count > 0 else 0
-    
-    return {
-        "u_counter": user_counter,
-        "a_counter": ai_counter,
-        "timeline_counters": timeline_counters,
-        "timeline_counts": timeline_counts,
-        "u_count": u_count, "u_avg": u_avg,
-        "a_count": a_count, "a_avg": a_avg
-    }
+        return {
+            "u_counter": user_counter,
+            "a_counter": ai_counter,
+            "timeline_counters": timeline_counters,
+            "timeline_counts": timeline_counts,
+            "u_count": u_count, "u_avg": u_avg,
+            "a_count": a_count, "a_avg": a_avg
+        }
+                            
+    except Exception as e:
+        st.error(f"解析出错: {e}")
+        return None
 
 # ==========================================
 # 4. 颜色截断器
@@ -167,7 +164,7 @@ USER_ICON = "👾"
 AI_ICON = "🦾"
 
 with st.sidebar:
-    st.header("⚙️ 设置面板 v29.0")
+    st.header("⚙️ 设置面板 v31.0")
     uploaded_file = st.file_uploader("1. 上传 conversations.json", type=['json'])
     
     st.markdown("---")
@@ -223,6 +220,7 @@ def show_wordcloud_panel(word_counts, cmap_name, title, icon, limit, min_val):
         st.pyplot(fig)
     except Exception as e: st.error(f"生成失败: {e}")
     
+    # 这里的 pd 必须在顶部 import pandas as pd
     with st.expander(f"📋 查看 {icon} {title} 高频词表", expanded=False):
         st.dataframe(pd.DataFrame(word_counts.most_common(limit), columns=['词语', '次数']), use_container_width=True, height=300)
 
@@ -252,7 +250,6 @@ def show_barchart_panel(word_counts, cmap_name, plain_text_title, limit):
 
     ax.set_yticks(range(len(df)))
     ax.set_yticklabels(df['Word'], fontproperties=font_normal)
-    
     ax.set_title(f"{plain_text_title} Top {limit} 词频统计", pad=40, fontproperties=font_title)
     
     ax.set_ylim(-0.5, len(df) - 0.5) 
@@ -269,7 +266,7 @@ def show_barchart_panel(word_counts, cmap_name, plain_text_title, limit):
     st.pyplot(fig)
 
 # ==========================================
-# 8. 时光机 (内存优化版)
+# 8. 时光机 (深度去噪)
 # ==========================================
 def show_timeline_panel(res):
     st.markdown("### 📅 月度话题时光机 (深度去噪)")
@@ -282,24 +279,19 @@ def show_timeline_panel(res):
         st.warning("没有解析到时间数据。")
         return
         
-    # 1. 计算全局 Top 50 噪音词
-    # (为了省内存，我们直接合并所有月的 Counter，而不是重新读原始文本)
+    # 1. 计算全局噪音 (Top 50)
     global_counter = Counter()
     for c in timeline_counters.values():
         global_counter.update(c)
-        
     global_noise_words = set([w for w, c in global_counter.most_common(50)])
     
-    # 2. 生成表格数据
     timeline_data = []
-    # 按月份排序 (key是 '2023-10' 字符串，可以直接降序排)
     sorted_months = sorted(timeline_counters.keys(), reverse=True)
     
     for month in sorted_months:
         month_counter = timeline_counters[month]
         count = timeline_counts[month]
         
-        # 过滤去噪
         filtered_counter = Counter()
         for w, c in month_counter.items():
             if w not in global_noise_words:
@@ -320,10 +312,10 @@ def show_timeline_panel(res):
 # ==========================================
 # 主界面
 # ==========================================
-st.title("🛸 ChatGPT 深度分析 29.0")
+st.title("🛸 ChatGPT 深度分析 31.0")
 
 if uploaded_file:
-    # 获取综合结果包
+    # 调用解析
     res = parse_and_count_stream(uploaded_file, final_stopwords)
     
     if res:

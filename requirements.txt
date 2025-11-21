@@ -1,0 +1,7 @@
+streamlit
+pandas
+jieba
+wordcloud
+matplotlib
+numpy
+Pillow

@@ -1,40 +1,25 @@
 import streamlit as st
 import json
-import pandas as pd
 import jieba
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.font_manager as fm
-from collections import Counter
+from collections import Counter, defaultdict
 import re
 import numpy as np
 from datetime import datetime
 import os
-import gc # 引入垃圾回收机制
+import gc
 
 # ==========================================
-# 0. 基础配置 & CSS
+# 0. 基础配置
 # ==========================================
-st.set_page_config(page_title="ChatGPT 深度分析 28.0 (轻量版)", layout="wide", page_icon="📊")
+st.set_page_config(page_title="ChatGPT 深度分析 29.0", layout="wide", page_icon="📊")
 
 st.markdown("""
 <style>
-section[data-testid="stSidebar"] .stMarkdown h1,
-section[data-testid="stSidebar"] .stMarkdown h2,
-section[data-testid="stSidebar"] .stMarkdown h3,
-section[data-testid="stSidebar"] .stMarkdown h4,
-section[data-testid="stSidebar"] .stMarkdown p,
-section[data-testid="stSidebar"] label, 
-section[data-testid="stSidebar"] .stCaption,
-section[data-testid="stSidebar"] div[data-testid="stText"],
-section[data-testid="stSidebar"] div[class*="stSlider"] > label,
-section[data-testid="stSidebar"] div[class*="stSelectbox"] > label,
-section[data-testid="stSidebar"] div[data-testid="stTextArea"] > label {
-    text-align: center !important;
-    width: 100% !important;
-    display: block !important;
-}
+/* 保持左对齐的清爽布局 */
 div[data-testid="stColorPicker"] {
     display: flex;
     justify-content: center;
@@ -42,28 +27,13 @@ div[data-testid="stColorPicker"] {
     flex-direction: column;
     width: 100%;
 }
-section[data-testid="stSidebar"] div[data-testid="stCheckbox"] {
-    display: flex;
-    justify-content: center !important;
-    align-items: center !important;
-    width: 100% !important;
-}
-section[data-testid="stSidebar"] div[data-testid="stCheckbox"] > div {
-    justify-content: center !important;
-}
-section[data-testid="stSidebar"] div[data-testid="stCheckbox"] label {
-    text-align: center !important;
-    width: auto !important;
-}
-section[data-testid="stSidebar"] > div:first-child {
-    padding-top: 2rem;
-}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
 # 1. 字体加载器
 # ==========================================
+@st.cache_resource
 def get_custom_font_path():
     font_path = "msyh.ttc"
     if os.path.exists(font_path):
@@ -93,31 +63,30 @@ DEFAULT_STOPWORDS = {
 }
 
 # ==========================================
-# 3. 核心解析函数 (内存优化版)
+# 3. 核心解析函数 (流式计算，内存占用极低)
 # ==========================================
 @st.cache_data
-def parse_and_count(file, stop_words):
-    """
-    直接在解析循环中统计词频，不保存海量文本到内存。
-    """
+def parse_and_count_stream(file, stop_words):
     try:
         data = json.load(file)
     except:
         st.error("文件格式不对，请确保上传的是 JSON 文件")
-        return None, None, None, None, 0, 0, 0, 0, 0, 0
+        return None
 
+    # 总计数器
     user_counter = Counter()
     ai_counter = Counter()
     
-    user_timeline = [] # 只存 (date, text_preview) 或 (date, top_keywords)
-    
+    # 时光机计数器：Key是月份(str), Value是该月的Counter
+    # 结构: { '2023-10': Counter({'单词': 10, ...}), ... }
+    timeline_counters = defaultdict(Counter)
+    timeline_counts = defaultdict(int) # 记录每个月对话条数
+
     u_count = 0
     u_total_len = 0
-    u_max_len = 0
     
     a_count = 0
     a_total_len = 0
-    a_max_len = 0
 
     for conversation in data:
         mapping = conversation.get('mapping', {})
@@ -135,41 +104,49 @@ def parse_and_count(file, stop_words):
                     # 1. 基础统计
                     text_len = len(text_content)
                     
+                    # 2. 获取月份 (用于时光机)
+                    msg_time = message.get('create_time')
+                    dt = datetime.fromtimestamp(msg_time) if msg_time else base_dt
+                    month_key = dt.strftime('%Y-%m') if dt else "Unknown"
+
                     if role == 'user':
                         u_count += 1
                         u_total_len += text_len
-                        if text_len > u_max_len: u_max_len = text_len
                         
-                        # 2. 词频统计 (流式处理，不存列表)
-                        words = jieba.cut(text_content) # 使用 cut 生成器，省内存
+                        # 流式分词 + 过滤
+                        words = jieba.cut(text_content)
                         filtered = [w for w in words if len(w.strip()) > 1 and w.strip().lower() not in stop_words]
-                        user_counter.update(filtered)
                         
-                        # 3. 时间线数据 (只存必要信息)
-                        msg_time = message.get('create_time')
-                        dt = datetime.fromtimestamp(msg_time) if msg_time else base_dt
-                        if dt:
-                            # 为了省内存，时间线我们只存 "日期" 和 "这句里的关键词"
-                            # 或者简单点，先存下来，后面 DataFrame 处理时再优化
-                            user_timeline.append({"time": dt, "keywords": filtered}) # 存过滤后的词列表比原文小
+                        # 更新总表
+                        user_counter.update(filtered)
+                        # 更新月度表 (时光机)
+                        if month_key != "Unknown":
+                            timeline_counters[month_key].update(filtered)
+                            timeline_counts[month_key] += 1
 
                     elif role == 'assistant':
                         a_count += 1
                         a_total_len += text_len
-                        if text_len > a_max_len: a_max_len = text_len
                         
                         words = jieba.cut(text_content)
                         filtered = [w for w in words if len(w.strip()) > 1 and w.strip().lower() not in stop_words]
                         ai_counter.update(filtered)
 
-    # 释放 JSON 对象占用的巨大内存
+    # 显式释放内存
     del data
     gc.collect()
     
     u_avg = int(u_total_len / u_count) if u_count > 0 else 0
     a_avg = int(a_total_len / a_count) if a_count > 0 else 0
     
-    return user_counter, ai_counter, user_timeline, u_count, u_avg, u_max_len, a_count, a_avg, a_max_len
+    return {
+        "u_counter": user_counter,
+        "a_counter": ai_counter,
+        "timeline_counters": timeline_counters,
+        "timeline_counts": timeline_counts,
+        "u_count": u_count, "u_avg": u_avg,
+        "a_count": a_count, "a_avg": a_avg
+    }
 
 # ==========================================
 # 4. 颜色截断器
@@ -190,7 +167,7 @@ USER_ICON = "👾"
 AI_ICON = "🦾"
 
 with st.sidebar:
-    st.markdown("<h1>⚙️ 设置面板 v28.0</h1>", unsafe_allow_html=True)
+    st.header("⚙️ 设置面板 v29.0")
     uploaded_file = st.file_uploader("1. 上传 conversations.json", type=['json'])
     
     st.markdown("---")
@@ -202,11 +179,11 @@ with st.sidebar:
     st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown(f"<h4>{USER_ICON} 你</h4>", unsafe_allow_html=True)
+        st.subheader(f"{USER_ICON} 你")
         user_wc_color = st.selectbox("你的色系", list(wordcloud_colormaps.keys()), index=0)
         
     with c2:
-        st.markdown(f"<h4>{AI_ICON} AI</h4>", unsafe_allow_html=True)
+        st.subheader(f"{AI_ICON} AI")
         ai_wc_color = st.selectbox("AI 的色系", list(wordcloud_colormaps.keys()), index=1)
 
     st.markdown("---")
@@ -221,7 +198,7 @@ with st.sidebar:
     if custom_input: final_stopwords.update([w.strip().lower() for w in re.split(r'[ ,，\n]+', custom_input) if w.strip()])
 
 # ==========================================
-# 6. 词云面板 (直接接收 Counter)
+# 6. 词云面板
 # ==========================================
 def show_wordcloud_panel(word_counts, cmap_name, title, icon, limit, min_val):
     if not word_counts: return
@@ -238,7 +215,7 @@ def show_wordcloud_panel(word_counts, cmap_name, title, icon, limit, min_val):
             colormap=custom_cmap, 
             max_words=limit, 
             contour_width=0
-        ).generate_from_frequencies(word_counts) # 直接使用统计好的频率
+        ).generate_from_frequencies(word_counts)
         
         fig, ax = plt.subplots(figsize=(10, 10))
         ax.imshow(wc, interpolation='bilinear')
@@ -250,12 +227,11 @@ def show_wordcloud_panel(word_counts, cmap_name, title, icon, limit, min_val):
         st.dataframe(pd.DataFrame(word_counts.most_common(limit), columns=['词语', '次数']), use_container_width=True, height=300)
 
 # ==========================================
-# 7. 柱状图面板 (直接接收 Counter)
+# 7. 柱状图面板
 # ==========================================
 def show_barchart_panel(word_counts, cmap_name, plain_text_title, limit):
     if not word_counts: return
     
-    # 直接从 Counter 取前N名，不需要再重新统计
     common_words = word_counts.most_common(limit)
     df = pd.DataFrame(common_words, columns=['Word', 'Count']).sort_values(by='Count', ascending=True)
     
@@ -276,6 +252,7 @@ def show_barchart_panel(word_counts, cmap_name, plain_text_title, limit):
 
     ax.set_yticks(range(len(df)))
     ax.set_yticklabels(df['Word'], fontproperties=font_normal)
+    
     ax.set_title(f"{plain_text_title} Top {limit} 词频统计", pad=40, fontproperties=font_title)
     
     ax.set_ylim(-0.5, len(df) - 0.5) 
@@ -292,74 +269,83 @@ def show_barchart_panel(word_counts, cmap_name, plain_text_title, limit):
     st.pyplot(fig)
 
 # ==========================================
-# 8. 时光机 (优化版)
+# 8. 时光机 (内存优化版)
 # ==========================================
-def show_timeline_panel(timeline_list):
+def show_timeline_panel(res):
     st.markdown("### 📅 月度话题时光机 (深度去噪)")
     st.caption("已自动剔除全局最常用的 50 个词，只显示每月的独特话题。")
     
-    if not timeline_list: 
+    timeline_counters = res["timeline_counters"]
+    timeline_counts = res["timeline_counts"]
+    
+    if not timeline_counters: 
         st.warning("没有解析到时间数据。")
         return
         
-    # 1. 构建全局词频 (用于去噪)
-    all_words = []
-    for item in timeline_list:
-        all_words.extend(item['keywords'])
-    
-    global_counter = Counter(all_words)
+    # 1. 计算全局 Top 50 噪音词
+    # (为了省内存，我们直接合并所有月的 Counter，而不是重新读原始文本)
+    global_counter = Counter()
+    for c in timeline_counters.values():
+        global_counter.update(c)
+        
     global_noise_words = set([w for w, c in global_counter.most_common(50)])
     
-    # 2. 构建 DataFrame
-    df = pd.DataFrame(timeline_list)
-    df['month'] = df['time'].dt.to_period('M')
-    
-    # 3. 按月聚合
+    # 2. 生成表格数据
     timeline_data = []
-    for month, group in df.groupby('month'):
-        # 汇总该月所有关键词
-        month_words = []
-        for keywords in group['keywords']:
-            month_words.extend(keywords)
-            
-        # 过滤噪音
-        filtered = [w for w in month_words if w not in global_noise_words]
-        
-        top_n = Counter(filtered).most_common(10)
-        top_str = " | ".join([f"{w}" for w, c in top_n])
-        timeline_data.append({"月份": str(month), "本月特色话题 (Top 10)": top_str, "对话条数": len(group)})
+    # 按月份排序 (key是 '2023-10' 字符串，可以直接降序排)
+    sorted_months = sorted(timeline_counters.keys(), reverse=True)
     
-    df_timeline = pd.DataFrame(timeline_data).sort_values(by="月份", ascending=False)
+    for month in sorted_months:
+        month_counter = timeline_counters[month]
+        count = timeline_counts[month]
+        
+        # 过滤去噪
+        filtered_counter = Counter()
+        for w, c in month_counter.items():
+            if w not in global_noise_words:
+                filtered_counter[w] = c
+        
+        top_n = filtered_counter.most_common(10)
+        top_str = " | ".join([f"{w}" for w, c in top_n])
+        
+        timeline_data.append({
+            "月份": month, 
+            "本月特色话题 (Top 10)": top_str, 
+            "对话条数": count
+        })
+    
+    df_timeline = pd.DataFrame(timeline_data)
     st.dataframe(df_timeline, use_container_width=True, height=600)
 
 # ==========================================
 # 主界面
 # ==========================================
-st.title("🛸 ChatGPT 深度分析 28.0")
+st.title("🛸 ChatGPT 深度分析 29.0")
 
 if uploaded_file:
-    # 调用新的解析函数，获取 9 个返回值
-    u_counter, a_counter, u_timeline, u_cnt, u_avg, u_max, a_cnt, a_avg, a_max = parse_and_count(uploaded_file, final_stopwords)
+    # 获取综合结果包
+    res = parse_and_count_stream(uploaded_file, final_stopwords)
     
-    if u_counter:
+    if res:
         st.markdown("### 🧬 聊天基因报告")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric(f"{USER_ICON} 你的总发言", f"{u_cnt} 条")
-        col2.metric(f"{USER_ICON} 你的平均长度", f"{u_avg} 字/条")
-        col3.metric(f"{AI_ICON} AI 的总回复", f"{a_cnt} 条")
-        col4.metric(f"{AI_ICON} AI 的平均长度", f"{a_avg} 字/条", delta=f"{a_avg - u_avg} (表达欲)" if a_avg > u_avg else None)
+        col1.metric(f"{USER_ICON} 你的总发言", f"{res['u_count']} 条")
+        col2.metric(f"{USER_ICON} 你的平均长度", f"{res['u_avg']} 字/条")
+        col3.metric(f"{AI_ICON} AI 的总回复", f"{res['a_count']} 条")
+        delta_val = res['a_avg'] - res['u_avg']
+        col4.metric(f"{AI_ICON} AI 的平均长度", f"{res['a_avg']} 字/条", delta=f"{delta_val} (表达欲)" if delta_val > 0 else None)
         st.markdown("---")
 
         tab1, tab2, tab3 = st.tabs(["🎨 词云 & 词表", "📊 实力对比", "📅 时光机"])
         
         with tab1:
             c1, c2 = st.columns(2)
-            with c1: st.subheader(f"{USER_ICON} 你的词云"); show_wordcloud_panel(u_counter, user_wc_color, "用户", USER_ICON, max_words_limit, color_intensity)
-            with c2: st.subheader(f"{AI_ICON} AI 的词云"); show_wordcloud_panel(a_counter, ai_wc_color, "AI", AI_ICON, max_words_limit, color_intensity)
+            with c1: st.subheader(f"{USER_ICON} 你的词云"); show_wordcloud_panel(res['u_counter'], user_wc_color, "用户", USER_ICON, max_words_limit, color_intensity)
+            with c2: st.subheader(f"{AI_ICON} AI 的词云"); show_wordcloud_panel(res['a_counter'], ai_wc_color, "AI", AI_ICON, max_words_limit, color_intensity)
         with tab2:
             c1, c2 = st.columns(2)
-            with c1: show_barchart_panel(u_counter, user_wc_color, "用户", max_words_limit)
-            with c2: show_barchart_panel(a_counter, ai_wc_color, "AI", max_words_limit)
+            with c1: show_barchart_panel(res['u_counter'], user_wc_color, "用户", max_words_limit)
+            with c2: show_barchart_panel(res['a_counter'], ai_wc_color, "AI", max_words_limit)
         with tab3: 
-            show_timeline_panel(u_timeline)
+            show_timeline_panel(res)
 else: st.write("👈 请在左侧上传文件开始")

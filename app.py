@@ -12,15 +12,16 @@ import numpy as np
 from PIL import Image, ImageFont, ImageDraw
 from datetime import datetime
 import os
-import urllib.request # 使用自带库下载图片，无需更新 requirements.txt
+import urllib.request
 
 # ==========================================
 # 0. 基础配置 & CSS
 # ==========================================
-st.set_page_config(page_title="ChatGPT 深度分析 22.0", layout="wide", page_icon="🦊")
+st.set_page_config(page_title="ChatGPT 深度分析 23.0", layout="wide", page_icon="🛸")
 
 st.markdown("""
 <style>
+/* 强制让颜色选择器组件居中显示 */
 div[data-testid="stColorPicker"] {
     display: flex;
     justify-content: center;
@@ -28,6 +29,7 @@ div[data-testid="stColorPicker"] {
     flex-direction: column;
     width: 100%;
 }
+/* 让颜色选择器的文字标签也居中 */
 div[data-testid="stColorPicker"] > label {
     width: 100%;
     text-align: center;
@@ -113,25 +115,24 @@ def calculate_stats(data_list):
 # 5. 形状生成器 (混合模式：字体 + 网络图片黑科技)
 # ==========================================
 @st.cache_data
-def get_mask(emoji_str):
-    char = emoji_str.split(" ")[0]
+def get_mask(emoji_key):
+    # 注意：这里接收的是 emoji_key (例如 "🦊")，而不是下拉菜单的中文标签
     
     # 1. 简单几何图形：用代码画 (最快)
-    if char == "◼️": return None
-    if char == "❤️":
+    if emoji_key == "◼️": return None
+    if emoji_key == "❤️":
         x, y = np.ogrid[:300, :300]
         mask = np.zeros((300, 300), dtype=np.uint8) + 255
         xc, yc = (x - 150)/65.0, (y - 150)/65.0
         mask[(xc**2 + yc**2 - 1)**3 - (xc**2) * (yc**3) < 0] = 0
         return mask
-    if char == "🟢":
+    if emoji_key == "🟢":
         x, y = np.ogrid[:300, :300]
         mask = np.zeros((300, 300), dtype=np.uint8) + 255
         mask[(x - 150)**2 + (y - 150)**2 < 140**2] = 0
         return mask
 
     # 2. 复杂动物/物体：从 Google Noto Emoji 仓库下载高清图
-    # 这些链接是 Google 官方开源的 Emoji 图片
     url_map = {
         "☁️": "[https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/512/emoji_u2601.png](https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/512/emoji_u2601.png)", # 云
         "💬": "[https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/512/emoji_u1f4ac.png](https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/512/emoji_u1f4ac.png)", # 气泡
@@ -143,7 +144,7 @@ def get_mask(emoji_str):
         "🧠": "[https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/512/emoji_u1f9e0.png](https://raw.githubusercontent.com/googlefonts/noto-emoji/main/png/512/emoji_u1f9e0.png)", # 大脑
     }
     
-    url = url_map.get(char)
+    url = url_map.get(emoji_key)
     if not url: return None # 找不到就返回矩形
 
     try:
@@ -154,22 +155,15 @@ def get_mask(emoji_str):
         img = Image.open(BytesIO(img_data))
         
         # 【核心黑科技】将彩色 Emoji 转换为黑白剪影 Mask
-        # 1. 创建一个纯白底图
         bg = Image.new("RGB", img.size, (255, 255, 255))
-        # 2. 提取 Alpha 通道 (透明度)
         if img.mode != 'RGBA':
             img = img.convert('RGBA')
         alpha = img.split()[3]
-        
-        # 3. 将 Alpha 通道作为蒙版，把黑色贴上去
-        # 意思：凡是原图不透明的地方，都填成黑色
         mask_layer = Image.new("RGB", img.size, (0, 0, 0))
         bg.paste(mask_layer, mask=alpha)
-        
-        # 4. 转灰度并二值化，确保只有纯黑和纯白
         mask_array = np.array(bg.convert("L"))
-        mask_array[mask_array < 200] = 0   # 有颜色的地方变黑
-        mask_array[mask_array >= 200] = 255 # 背景变白
+        mask_array[mask_array < 200] = 0   
+        mask_array[mask_array >= 200] = 255 
         
         return mask_array
         
@@ -191,14 +185,32 @@ def get_truncated_cmap(cmap_name, min_val=0.0, max_val=1.0, n=256):
 # ==========================================
 # 7. 界面侧边栏
 # ==========================================
-# 动物们回来啦！
-emoji_options = ["◼️ 矩形", "☁️ 云朵", "❤️ 爱心", "💬 气泡", "🧠 大脑", "🦊 狐狸", "🐟 小鱼", "🐱 猫咪", "🦉 猫头鹰", "🐶 小狗"]
+
+# 【修复】定义一个映射字典：中文标签 -> Emoji Key
+# 这样下拉菜单显示中文（云端不会乱码），后台逻辑用 Emoji Key 去下载图片
+SHAPE_MAPPING = {
+    "矩形 (Default)": "◼️",
+    "爱心 (Heart)": "❤️",
+    "云朵 (Cloud)": "☁️",
+    "气泡 (Speech Bubble)": "💬",
+    "大脑 (Brain)": "🧠",
+    "狐狸 (Fox)": "🦊",
+    "小鱼 (Fish)": "🐟",
+    "猫咪 (Cat)": "🐱",
+    "猫头鹰 (Owl)": "🦉",
+    "小狗 (Dog)": "🐶"
+}
+# 获取所有可读的标签列表
+shape_labels = list(SHAPE_MAPPING.keys())
+
 wordcloud_colormaps = {"Blues (蓝)": "Blues", "Oranges (橙)": "Oranges", "Reds (红)": "Reds", "Greens (绿)": "Greens", "Purples (紫)": "Purples", "viridis (极光)": "viridis", "magma (岩浆)": "magma", "cool (冷色)": "cool", "autumn (秋色)": "autumn"}
 USER_ICON = "👾" 
 AI_ICON = "🦾"
 
 with st.sidebar:
-    st.title("⚙️ 设置面板 v22.0")
+    # 【修复】标题居中
+    st.markdown("<h1 style='text-align: center;'>⚙️ 设置面板 v23.0</h1>", unsafe_allow_html=True)
+    
     uploaded_file = st.file_uploader("1. 上传 conversations.json", type=['json'])
     
     st.markdown("---")
@@ -211,12 +223,18 @@ with st.sidebar:
     c1, c2 = st.columns(2)
     with c1:
         st.markdown(f"<h4 style='text-align: center;'>{USER_ICON} 你</h4>", unsafe_allow_html=True)
-        user_shape = st.selectbox("你的形状", emoji_options, index=5) # 默认选个狐狸玩玩
+        # 显示中文标签
+        user_shape_label = st.selectbox("你的形状", shape_labels, index=5)
+        # 获取对应的 Emoji Key
+        user_shape_key = SHAPE_MAPPING[user_shape_label]
         user_wc_color = st.selectbox("你的色系", list(wordcloud_colormaps.keys()), index=0)
         
     with c2:
         st.markdown(f"<h4 style='text-align: center;'>{AI_ICON} AI</h4>", unsafe_allow_html=True)
-        ai_shape = st.selectbox("AI 的形状", emoji_options, index=3)
+        # 显示中文标签
+        ai_shape_label = st.selectbox("AI 的形状", shape_labels, index=8)
+        # 获取对应的 Emoji Key
+        ai_shape_key = SHAPE_MAPPING[ai_shape_label]
         ai_wc_color = st.selectbox("AI 的色系", list(wordcloud_colormaps.keys()), index=1)
 
     st.markdown("---")
@@ -232,7 +250,7 @@ with st.sidebar:
 # ==========================================
 # 8. 词云面板
 # ==========================================
-def show_wordcloud_panel(data_list, cmap_name, shape_str, title, icon, limit, min_val):
+def show_wordcloud_panel(data_list, cmap_name, shape_key, title, icon, limit, min_val):
     if not data_list: return
     text_list = [d['text'] for d in data_list]
     full_text = " ".join(text_list)
@@ -240,7 +258,8 @@ def show_wordcloud_panel(data_list, cmap_name, shape_str, title, icon, limit, mi
     filtered_words = [w.strip() for w in words if len(w.strip()) > 1 and w.strip().lower() not in final_stopwords]
     word_counts = Counter(filtered_words)
     
-    mask = get_mask(shape_str)
+    # 传入 Emoji Key 获取 Mask
+    mask = get_mask(shape_key)
     base_cmap_name = wordcloud_colormaps[cmap_name]
     custom_cmap = get_truncated_cmap(base_cmap_name, min_val=min_val, max_val=1.0)
     fp = get_custom_font_path()
@@ -259,7 +278,8 @@ def show_wordcloud_panel(data_list, cmap_name, shape_str, title, icon, limit, mi
 # ==========================================
 # 9. 柱状图面板
 # ==========================================
-def show_barchart_panel(data_list, cmap_name, role_icon, limit):
+# 【修复】将 role_icon 参数改为 plain_text_title，避免云端乱码
+def show_barchart_panel(data_list, cmap_name, plain_text_title, limit):
     if not data_list: return
     text_list = [d['text'] for d in data_list]
     words = [w.strip() for w in jieba.lcut(" ".join(text_list)) if len(w.strip()) > 1 and w.strip().lower() not in final_stopwords]
@@ -282,7 +302,9 @@ def show_barchart_panel(data_list, cmap_name, role_icon, limit):
 
     ax.set_yticks(range(len(df)))
     ax.set_yticklabels(df['Word'], fontsize=14, fontproperties=font_prop)
-    ax.set_title(f"{role_icon} Top {limit} 词频统计", fontsize=20, pad=20, fontproperties=font_prop)
+    
+    # 【修复】使用 📈 图标，加大字号 (fontsize=30)，增加 padding (pad=25)
+    ax.set_title(f"📈 {plain_text_title} Top {limit} 词频统计", fontsize=30, pad=25, fontproperties=font_prop)
     
     ax.set_ylim(-0.5, len(df) - 0.5) 
     ax.set_xlim(0, df['Count'].max() * 1.15) 
@@ -333,7 +355,7 @@ def show_timeline_panel(user_list):
 # ==========================================
 # 主界面
 # ==========================================
-st.title("🛸 ChatGPT 深度分析 22.0")
+st.title("🛸 ChatGPT 深度分析 23.0")
 
 if uploaded_file:
     user_data, ai_data = parse_data(uploaded_file)
@@ -352,12 +374,14 @@ if uploaded_file:
     
     with tab1:
         c1, c2 = st.columns(2)
-        with c1: st.subheader(f"{USER_ICON} 你的词云"); show_wordcloud_panel(user_data, user_wc_color, user_shape, "用户", USER_ICON, max_words_limit, color_intensity)
-        with c2: st.subheader(f"{AI_ICON} AI 的词云"); show_wordcloud_panel(ai_data, ai_wc_color, ai_shape, "AI", AI_ICON, max_words_limit, color_intensity)
+        # 传入 user_shape_key 和 ai_shape_key
+        with c1: st.subheader(f"{USER_ICON} 你的词云"); show_wordcloud_panel(user_data, user_wc_color, user_shape_key, "用户", USER_ICON, max_words_limit, color_intensity)
+        with c2: st.subheader(f"{AI_ICON} AI 的词云"); show_wordcloud_panel(ai_data, ai_wc_color, ai_shape_key, "AI", AI_ICON, max_words_limit, color_intensity)
     with tab2:
         c1, c2 = st.columns(2)
-        with c1: show_barchart_panel(user_data, user_wc_color, USER_ICON, max_words_limit)
-        with c2: show_barchart_panel(ai_data, ai_wc_color, AI_ICON, max_words_limit)
+        # 【修复】传入纯文本标题 "用户" 和 "AI"
+        with c1: show_barchart_panel(user_data, user_wc_color, "用户", max_words_limit)
+        with c2: show_barchart_panel(ai_data, ai_wc_color, "AI", max_words_limit)
     with tab3: 
         show_timeline_panel(user_data)
 else: st.write("👈 请在左侧上传文件开始")

@@ -1,7 +1,7 @@
 import streamlit as st
 # 确保这些 import 都在最上面
 import ijson
-import pandas as pd  # 这里就是报错找不到的 pd，一定要有！
+import pandas as pd
 import jieba
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
@@ -17,7 +17,7 @@ import gc
 # ==========================================
 # 0. 基础配置
 # ==========================================
-st.set_page_config(page_title="ChatGPT 深度分析 31.0", layout="wide", page_icon="📊")
+st.set_page_config(page_title="ChatGPT 深度分析 32.0", layout="wide", page_icon="📊")
 
 st.markdown("""
 <style>
@@ -64,16 +64,12 @@ DEFAULT_STOPWORDS = {
 }
 
 # ==========================================
-# 3. 核心解析函数 (流式读取修复版)
+# 3. 核心解析函数 (修复 Decimal 报错)
 # ==========================================
 @st.cache_data
 def parse_and_count_stream(file, stop_words):
     try:
-        # 【新增】重要：将文件指针重置到开头，防止多次读取时出错
         file.seek(0) 
-        
-        # ijson 流式读取
-        # 'item' 表示根列表下的每一项
         conversations = ijson.items(file, 'item')
         
         user_counter = Counter()
@@ -88,12 +84,13 @@ def parse_and_count_stream(file, stop_words):
 
         for conversation in conversations:
             mapping = conversation.get('mapping', {})
-            create_time = conversation.get('create_time')
-            base_dt = datetime.fromtimestamp(create_time) if create_time else None
+            
+            # 【核心修复】将 Decimal 强转为 float
+            raw_create_time = conversation.get('create_time')
+            base_dt = datetime.fromtimestamp(float(raw_create_time)) if raw_create_time else None
             
             for node_id, node_data in mapping.items():
                 message = node_data.get('message')
-                # 防御性检查
                 if message is None: continue
                     
                 if message and message.get('content') and message.get('author'):
@@ -103,8 +100,11 @@ def parse_and_count_stream(file, stop_words):
                     
                     if text_content:
                         text_len = len(text_content)
-                        msg_time = message.get('create_time')
-                        dt = datetime.fromtimestamp(msg_time) if msg_time else base_dt
+                        
+                        # 【核心修复】将 Decimal 强转为 float
+                        raw_msg_time = message.get('create_time')
+                        dt = datetime.fromtimestamp(float(raw_msg_time)) if raw_msg_time else base_dt
+                        
                         month_key = dt.strftime('%Y-%m') if dt else "Unknown"
 
                         if role == 'user':
@@ -124,11 +124,9 @@ def parse_and_count_stream(file, stop_words):
                             filtered = [w for w in words if len(w.strip()) > 1 and w.strip().lower() not in stop_words]
                             ai_counter.update(filtered)
         
-        # 计算平均值
         u_avg = int(u_total_len / u_count) if u_count > 0 else 0
         a_avg = int(a_total_len / a_count) if a_count > 0 else 0
         
-        # 显式垃圾回收
         del conversations
         gc.collect()
 
@@ -164,7 +162,7 @@ USER_ICON = "👾"
 AI_ICON = "🦾"
 
 with st.sidebar:
-    st.header("⚙️ 设置面板 v31.0")
+    st.header("⚙️ 设置面板 v32.0")
     uploaded_file = st.file_uploader("1. 上传 conversations.json", type=['json'])
     
     st.markdown("---")
@@ -220,7 +218,6 @@ def show_wordcloud_panel(word_counts, cmap_name, title, icon, limit, min_val):
         st.pyplot(fig)
     except Exception as e: st.error(f"生成失败: {e}")
     
-    # 这里的 pd 必须在顶部 import pandas as pd
     with st.expander(f"📋 查看 {icon} {title} 高频词表", expanded=False):
         st.dataframe(pd.DataFrame(word_counts.most_common(limit), columns=['词语', '次数']), use_container_width=True, height=300)
 
@@ -279,7 +276,6 @@ def show_timeline_panel(res):
         st.warning("没有解析到时间数据。")
         return
         
-    # 1. 计算全局噪音 (Top 50)
     global_counter = Counter()
     for c in timeline_counters.values():
         global_counter.update(c)
@@ -312,10 +308,9 @@ def show_timeline_panel(res):
 # ==========================================
 # 主界面
 # ==========================================
-st.title("🛸 ChatGPT 深度分析 31.0")
+st.title("🛸 ChatGPT 深度分析 32.0")
 
 if uploaded_file:
-    # 调用解析
     res = parse_and_count_stream(uploaded_file, final_stopwords)
     
     if res:

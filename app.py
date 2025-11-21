@@ -13,63 +13,12 @@ from datetime import datetime
 import os
 
 # ==========================================
-# 0. 基础配置 & CSS (核弹级居中修复)
+# 0. 基础配置
 # ==========================================
-st.set_page_config(page_title="ChatGPT 深度分析 26.0", layout="wide", page_icon="📊")
+st.set_page_config(page_title="ChatGPT 深度分析 27.0", layout="wide", page_icon="📊")
 
-st.markdown("""
-<style>
-/* 1. 侧边栏全局文本强制居中 (地毯式轰炸) */
-section[data-testid="stSidebar"] .stMarkdown h1,
-section[data-testid="stSidebar"] .stMarkdown h2,
-section[data-testid="stSidebar"] .stMarkdown h3,
-section[data-testid="stSidebar"] .stMarkdown h4,
-section[data-testid="stSidebar"] .stMarkdown p,
-section[data-testid="stSidebar"] label, 
-section[data-testid="stSidebar"] .stCaption,
-section[data-testid="stSidebar"] div[data-testid="stText"],
-section[data-testid="stSidebar"] div[class*="stSlider"] > label,
-section[data-testid="stSidebar"] div[class*="stSelectbox"] > label,
-section[data-testid="stSidebar"] div[data-testid="stTextArea"] > label {
-    text-align: center !important;
-    width: 100% !important;
-    display: block !important;
-}
-
-/* 2. 颜色选择器居中 */
-div[data-testid="stColorPicker"] {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    flex-direction: column;
-    width: 100%;
-}
-
-/* 3. 【核心修复】Toggle 开关和文字对齐 */
-/* 让包含开关和文字的容器居中 */
-section[data-testid="stSidebar"] div[data-testid="stCheckbox"] {
-    display: flex;
-    justify-content: center !important;
-    align-items: center !important;
-    width: 100% !important;
-}
-/* 让开关控件本身居中 */
-section[data-testid="stSidebar"] div[data-testid="stCheckbox"] > div {
-    justify-content: center !important;
-}
-/* 强制文字标签居中 */
-section[data-testid="stSidebar"] div[data-testid="stCheckbox"] label {
-    text-align: center !important;
-    width: auto !important; /* 允许文字自然宽度，以便居中 */
-}
-
-
-/* 4. 调整 Sidebar 顶部边距 */
-section[data-testid="stSidebar"] > div:first-child {
-    padding-top: 2rem;
-}
-</style>
-""", unsafe_allow_html=True)
+# 只保留最基础的 CSS (如果有必要)，目前为了整齐，我们保持原生样式
+# 原生样式就是左对齐，非常整洁
 
 # ==========================================
 # 1. 字体加载器
@@ -159,30 +108,31 @@ def get_truncated_cmap(cmap_name, min_val=0.0, max_val=1.0, n=256):
     return new_cmap
 
 # ==========================================
-# 6. 界面侧边栏
+# 6. 界面侧边栏 (回归左对齐)
 # ==========================================
 wordcloud_colormaps = {"Blues (蓝)": "Blues", "Oranges (橙)": "Oranges", "Reds (红)": "Reds", "Greens (绿)": "Greens", "Purples (紫)": "Purples", "viridis (极光)": "viridis", "magma (岩浆)": "magma", "cool (冷色)": "cool", "autumn (秋色)": "autumn"}
 USER_ICON = "👾" 
 AI_ICON = "🦾"
 
 with st.sidebar:
-    st.markdown("<h1>⚙️ 设置面板 v26.0</h1>", unsafe_allow_html=True)
+    st.header("⚙️ 设置面板 v27.0") # 标准左对齐标题
     uploaded_file = st.file_uploader("1. 上传 conversations.json", type=['json'])
     
     st.markdown("---")
     st.header("🎨 视觉定制")
     
     st.write("🌈 **颜色浓度**")
+    st.caption("调节滑块，让颜色更深或更浅 👇")
     color_intensity = st.slider("去除浅色比例", 0.0, 0.6, 0.3)
 
     st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown(f"<h4>{USER_ICON} 你</h4>", unsafe_allow_html=True)
+        st.subheader(f"{USER_ICON} 你") # 标准子标题
         user_wc_color = st.selectbox("你的色系", list(wordcloud_colormaps.keys()), index=0)
         
     with c2:
-        st.markdown(f"<h4>{AI_ICON} AI</h4>", unsafe_allow_html=True)
+        st.subheader(f"{AI_ICON} AI")
         ai_wc_color = st.selectbox("AI 的色系", list(wordcloud_colormaps.keys()), index=1)
 
     st.markdown("---")
@@ -190,16 +140,14 @@ with st.sidebar:
     
     st.markdown("---")
     st.header("🛡️ 过滤设置")
-    # Toggle 开关
     use_default = st.toggle("使用内置净化词表", value=True)
-    # Text Area
     custom_input = st.text_area("自定义屏蔽词", height=80)
     
     final_stopwords = set(DEFAULT_STOPWORDS) if use_default else set()
     if custom_input: final_stopwords.update([w.strip().lower() for w in re.split(r'[ ,，\n]+', custom_input) if w.strip()])
 
 # ==========================================
-# 7. 词云面板 (修复：移除 Mask，稳定正方形)
+# 7. 词云面板 (标准正方形)
 # ==========================================
 def show_wordcloud_panel(data_list, cmap_name, title, icon, limit, min_val):
     if not data_list: return
@@ -214,10 +162,9 @@ def show_wordcloud_panel(data_list, cmap_name, title, icon, limit, min_val):
     fp = get_custom_font_path()
 
     try:
-        # 【修复】彻底移除 mask 参数，仅依靠 width 和 height 设定正方形
         wc = WordCloud(
             font_path=fp, 
-            width=1000, height=1000, # 强制正方形
+            width=1000, height=1000, # 1:1 正方形
             background_color='white', 
             colormap=custom_cmap, 
             max_words=limit, 
@@ -225,7 +172,7 @@ def show_wordcloud_panel(data_list, cmap_name, title, icon, limit, min_val):
             contour_width=0
         ).generate_from_frequencies(word_counts)
         
-        fig, ax = plt.subplots(figsize=(10, 10)) # 画布也是正方形
+        fig, ax = plt.subplots(figsize=(10, 10))
         ax.imshow(wc, interpolation='bilinear')
         ax.axis('off')
         st.pyplot(fig)
@@ -235,7 +182,7 @@ def show_wordcloud_panel(data_list, cmap_name, title, icon, limit, min_val):
         st.dataframe(pd.DataFrame(word_counts.most_common(limit), columns=['词语', '次数']), use_container_width=True, height=300)
 
 # ==========================================
-# 8. 柱状图面板 (修复：标题字号缩小至35)
+# 8. 柱状图面板 (字号 35 + 粗体)
 # ==========================================
 def show_barchart_panel(data_list, cmap_name, plain_text_title, limit):
     if not data_list: return
@@ -250,8 +197,7 @@ def show_barchart_panel(data_list, cmap_name, plain_text_title, limit):
     fig, ax = plt.subplots(figsize=(12, dynamic_height))
     
     font_normal = get_custom_font_prop(size=14)
-    # 【修复】字号从 50 改为 35
-    font_title = get_custom_font_prop(size=35, weight='bold') 
+    font_title = get_custom_font_prop(size=35, weight='bold') # 35号字
     
     base_cmap_name = wordcloud_colormaps[cmap_name]
     cmap = get_truncated_cmap(base_cmap_name, 0.3, 0.9)
@@ -264,7 +210,6 @@ def show_barchart_panel(data_list, cmap_name, plain_text_title, limit):
     ax.set_yticks(range(len(df)))
     ax.set_yticklabels(df['Word'], fontproperties=font_normal)
     
-    # 应用新的 35号粗体标题
     ax.set_title(f"{plain_text_title} Top {limit} 词频统计", pad=40, fontproperties=font_title)
     
     ax.set_ylim(-0.5, len(df) - 0.5) 
@@ -316,7 +261,7 @@ def show_timeline_panel(user_list):
 # ==========================================
 # 主界面
 # ==========================================
-st.title("🛸 ChatGPT 深度分析 26.0")
+st.title("🛸 ChatGPT 深度分析 27.0")
 
 if uploaded_file:
     user_data, ai_data = parse_data(uploaded_file)

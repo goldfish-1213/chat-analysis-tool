@@ -9,23 +9,26 @@ import matplotlib.font_manager as fm
 from collections import Counter
 import re
 import numpy as np
+from PIL import Image, ImageFont, ImageDraw
 from datetime import datetime
 import os
 
 # ==========================================
-# 0. 基础配置 & CSS (强力居中版)
+# 0. 基础配置 & CSS (强力居中修复版)
 # ==========================================
-st.set_page_config(page_title="ChatGPT 深度分析 24.0", layout="wide", page_icon="📊")
+st.set_page_config(page_title="ChatGPT 深度分析 25.0", layout="wide", page_icon="📊")
 
 st.markdown("""
 <style>
-/* 1. 侧边栏所有文本强制居中 */
+/* 1. 侧边栏全局文本居中 */
 section[data-testid="stSidebar"] .stMarkdown h1,
 section[data-testid="stSidebar"] .stMarkdown h2,
 section[data-testid="stSidebar"] .stMarkdown h3,
 section[data-testid="stSidebar"] .stMarkdown p,
-section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] .stCaption {
+section[data-testid="stSidebar"] .stMarkdown h4,
+section[data-testid="stSidebar"] label, 
+section[data-testid="stSidebar"] .stCaption,
+section[data-testid="stSidebar"] div[data-testid="stText"] {
     text-align: center !important;
     width: 100% !important;
     display: block !important;
@@ -40,9 +43,17 @@ div[data-testid="stColorPicker"] {
     width: 100%;
 }
 
-/* 3. 调整一下滑动条的布局 */
-div[data-testid="stSlider"] {
-    padding-top: 10px;
+/* 3. 修复 Toggle 开关和 Text Area 标题的居中 */
+div[data-testid="stCheckbox"] {
+    justify-content: center;
+}
+div[data-testid="stTextArea"] label {
+    text-align: center !important;
+}
+
+/* 4. 调整 Sidebar 顶部边距 */
+section[data-testid="stSidebar"] > div:first-child {
+    padding-top: 2rem;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -57,9 +68,13 @@ def get_custom_font_path():
     else:
         return "arial.ttf" 
 
-def get_custom_font_prop():
+def get_custom_font_prop(size=14, weight='normal'):
     fp = get_custom_font_path()
-    return fm.FontProperties(fname=fp)
+    # 显式设置大小和粗细
+    prop = fm.FontProperties(fname=fp)
+    prop.set_size(size)
+    prop.set_weight(weight)
+    return prop
 
 # ==========================================
 # 2. 内置停用词表
@@ -139,7 +154,7 @@ USER_ICON = "👾"
 AI_ICON = "🦾"
 
 with st.sidebar:
-    st.markdown("<h1>⚙️ 设置面板 v24.0</h1>", unsafe_allow_html=True)
+    st.markdown("<h1>⚙️ 设置面板 v25.0</h1>", unsafe_allow_html=True)
     uploaded_file = st.file_uploader("1. 上传 conversations.json", type=['json'])
     
     st.markdown("---")
@@ -152,12 +167,10 @@ with st.sidebar:
     c1, c2 = st.columns(2)
     with c1:
         st.markdown(f"<h4>{USER_ICON} 你</h4>", unsafe_allow_html=True)
-        # 【修改】移除形状选择，只保留颜色
         user_wc_color = st.selectbox("你的色系", list(wordcloud_colormaps.keys()), index=0)
         
     with c2:
         st.markdown(f"<h4>{AI_ICON} AI</h4>", unsafe_allow_html=True)
-        # 【修改】移除形状选择，只保留颜色
         ai_wc_color = st.selectbox("AI 的色系", list(wordcloud_colormaps.keys()), index=1)
 
     st.markdown("---")
@@ -171,7 +184,7 @@ with st.sidebar:
     if custom_input: final_stopwords.update([w.strip().lower() for w in re.split(r'[ ,，\n]+', custom_input) if w.strip()])
 
 # ==========================================
-# 7. 词云面板 (回归矩形)
+# 7. 词云面板 (修复：使用纯白方块Mask)
 # ==========================================
 def show_wordcloud_panel(data_list, cmap_name, title, icon, limit, min_val):
     if not data_list: return
@@ -185,10 +198,23 @@ def show_wordcloud_panel(data_list, cmap_name, title, icon, limit, min_val):
     custom_cmap = get_truncated_cmap(base_cmap_name, min_val=min_val, max_val=1.0)
     fp = get_custom_font_path()
 
+    # 【修复】创建一个 1000x1000 的纯白 mask，强制词云在这个正方形内
+    # 这样可以保证它像以前一样饱满，而不是变成扁长的矩形
+    square_mask = np.array(Image.new("RGB", (1000, 1000), (255, 255, 255)))
+
     try:
-        # 【修改】移除了 mask 参数，默认即为矩形
-        wc = WordCloud(font_path=fp, width=1000, height=600, background_color='white', colormap=custom_cmap, max_words=limit, stopwords=final_stopwords).generate_from_frequencies(word_counts)
-        fig, ax = plt.subplots(figsize=(10, 6))
+        wc = WordCloud(
+            font_path=fp, 
+            width=1000, height=1000, # 强制正方形
+            background_color='white', 
+            colormap=custom_cmap, 
+            max_words=limit, 
+            stopwords=final_stopwords,
+            mask=square_mask, # 使用正方形 Mask
+            contour_width=0
+        ).generate_from_frequencies(word_counts)
+        
+        fig, ax = plt.subplots(figsize=(10, 10)) # 画布也是正方形
         ax.imshow(wc, interpolation='bilinear')
         ax.axis('off')
         st.pyplot(fig)
@@ -198,7 +224,7 @@ def show_wordcloud_panel(data_list, cmap_name, title, icon, limit, min_val):
         st.dataframe(pd.DataFrame(word_counts.most_common(limit), columns=['词语', '次数']), use_container_width=True, height=300)
 
 # ==========================================
-# 8. 柱状图面板 (大字号无Emoji)
+# 8. 柱状图面板 (修复：大号粗体标题)
 # ==========================================
 def show_barchart_panel(data_list, cmap_name, plain_text_title, limit):
     if not data_list: return
@@ -212,7 +238,10 @@ def show_barchart_panel(data_list, cmap_name, plain_text_title, limit):
     dynamic_height = max(6, len(df) * height_per_row)
     fig, ax = plt.subplots(figsize=(12, dynamic_height))
     
-    font_prop = get_custom_font_prop()
+    # 【修复】生成两种字体属性：一种普通（给坐标轴），一种超大加粗（给标题）
+    font_normal = get_custom_font_prop(size=14)
+    font_title = get_custom_font_prop(size=50, weight='bold') # 50号粗体！
+    
     base_cmap_name = wordcloud_colormaps[cmap_name]
     cmap = get_truncated_cmap(base_cmap_name, 0.3, 0.9)
     
@@ -222,10 +251,10 @@ def show_barchart_panel(data_list, cmap_name, plain_text_title, limit):
         ax.text(count + (df['Count'].max() * 0.01), i, str(count), va='center', fontsize=12)
 
     ax.set_yticks(range(len(df)))
-    ax.set_yticklabels(df['Word'], fontsize=14, fontproperties=font_prop)
+    ax.set_yticklabels(df['Word'], fontproperties=font_normal)
     
-    # 【修改】移除了 emoji，将字号设为 40
-    ax.set_title(f"{plain_text_title} Top {limit} 词频统计", fontsize=40, pad=30, fontproperties=font_prop)
+    # 【修复】应用超大粗体标题
+    ax.set_title(f"{plain_text_title} Top {limit} 词频统计", pad=40, fontproperties=font_title)
     
     ax.set_ylim(-0.5, len(df) - 0.5) 
     ax.set_xlim(0, df['Count'].max() * 1.15) 
@@ -276,7 +305,7 @@ def show_timeline_panel(user_list):
 # ==========================================
 # 主界面
 # ==========================================
-st.title("🛸 ChatGPT 深度分析 24.0")
+st.title("🛸 ChatGPT 深度分析 25.0")
 
 if uploaded_file:
     user_data, ai_data = parse_data(uploaded_file)
